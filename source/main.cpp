@@ -259,11 +259,8 @@ int main()
 {
     Logger::getInstance().init("car_ctl.log", LogLevel::INFO);
 
-    // 初始化审计日志（MySQL 断连不阻塞主程序）
-#ifdef HAS_MYSQL
     AsyncAuditLogger::getInstance().init("conf/db.conf");
     LOG_INFO("AsyncAuditLogger initialized");
-#endif
 
     // 初始化 Redis 状态管理器
     RedisManager::getInstance().init("conf/redis.conf");
@@ -305,9 +302,7 @@ int main()
     }
 
     // 优雅关闭审计日志（等待队列消费完毕）
-#ifdef HAS_MYSQL
     AsyncAuditLogger::getInstance().shutdown();
-#endif
     RedisManager::getInstance().shutdown();
 
     // 退出前最后一次落盘。

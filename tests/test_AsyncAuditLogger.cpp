@@ -19,7 +19,6 @@ TEST(AsyncAuditLogger, EnqueueNonBlocking) {
     auto end = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-    // 100条日志投递应在100ms内完成
     EXPECT_LT(ms, 100);
 }
 
@@ -30,11 +29,9 @@ TEST(AsyncAuditLogger, QueueDropOld) {
         logger.enqueue("TEST", "overflow_test", static_cast<float>(i), "overflow");
     }
 
-    // 队列大小不应超过 max_queue_size（默认10000）
     EXPECT_LE(logger.queueSize(), 10000);
 }
 
 TEST(AsyncAuditLogger, ShutdownWithoutInit) {
-    // shutdown 不应崩溃，即使没有 init
     AsyncAuditLogger::getInstance().shutdown();
 }

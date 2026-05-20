@@ -1,9 +1,7 @@
 #include "AsyncAuditLogger.hpp"
 #include <fstream>
 #include <iostream>
-#include <algorithm>
-#include <vector>
-#include <mysql/mysql.h>
+#include <sqlite3.h>
 
 AsyncAuditLogger& AsyncAuditLogger::getInstance() {
     static AsyncAuditLogger instance;
@@ -39,100 +37,83 @@ void AsyncAuditLogger::parseConfig(const std::string& conf_path) {
         trim(key);
         trim(val);
 
-        if (key == "mysql_host") m_host = val;
-        else if (key == "mysql_port") m_port = static_cast<uint16_t>(std::stoi(val));
-        else if (key == "mysql_user") m_user = val;
-        else if (key == "mysql_password") m_password = val;
-        else if (key == "mysql_database") m_database = val;
-        else if (key == "mysql_charset") m_charset = val;
+        if (key == "db_path") m_db_path = val;
         else if (key == "audit_queue_max_size") m_max_queue_size = static_cast<size_t>(std::stoul(val));
-        else if (key == "reconnect_base_interval_ms") m_reconnect_base_ms = std::stoi(val);
-        else if (key == "reconnect_max_interval_ms") m_reconnect_max_ms = std::stoi(val);
     }
 }
 
-bool AsyncAuditLogger::connectMySQL() {
-    MYSQL* conn = mysql_init(nullptr);
-    if (!conn) return false;
-
-    mysql_options(conn, MYSQL_SET_CHARSET_NAME, m_charset.c_str());
-
-    if (!mysql_real_connect(conn,
-                            m_host.c_str(),
-                            m_user.c_str(),
-                            m_password.c_str(),
-                            m_database.c_str(),
-                            m_port,
-                            nullptr, 0)) {
-        std::cerr << "[AsyncAuditLogger] MySQL connect failed: "
-                  << mysql_error(conn) << "\n";
-        mysql_close(conn);
+bool AsyncAuditLogger::initDB() {
+    sqlite3* db = nullptr;
+    if (sqlite3_open(m_db_path.c_str(), &db) != SQLITE_OK) {
+        std::cerr << "[AsyncAuditLogger] SQLite open failed: " << sqlite3_errmsg(db) << "\n";
+        sqlite3_close(db);  // 即使 open 失败也必须 close
         return false;
     }
 
-    m_mysql = conn;
+    m_db = db;
+
+    // WAL模式
+    char* errMsg = nullptr;
+    sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, &errMsg);
+    if (errMsg) {
+        sqlite3_free(errMsg);
+    }
+
+    const char* createTable = R"(
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            event_type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            speed REAL NOT NULL,
+            reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_logs(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_event_type ON audit_logs(event_type);
+    )";
+
+    errMsg = nullptr;
+    if (sqlite3_exec(db, createTable, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+        std::cerr << "[AsyncAuditLogger] Create table failed: " << errMsg << "\n";
+        sqlite3_free(errMsg);
+        sqlite3_close(db);
+        m_db = nullptr;
+        return false;
+    }
+
     m_connected = true;
     return true;
 }
 
-bool AsyncAuditLogger::reconnect() {
-    if (m_mysql) {
-        mysql_close(static_cast<MYSQL*>(m_mysql));
-        m_mysql = nullptr;
-    }
-    m_connected = false;
-    return connectMySQL();
-}
-
 bool AsyncAuditLogger::insertLog(const AuditLogEntry& entry) {
-    if (!m_connected || !m_mysql) return false;
+    if (!m_connected || !m_db) return false;
 
-    auto* conn = static_cast<MYSQL*>(m_mysql);
+    auto* db = static_cast<sqlite3*>(m_db);
 
-    if (mysql_ping(conn) != 0) {
-        m_connected = false;
+    const char* sql = "INSERT INTO audit_logs (event_type, action, speed, reason) VALUES (?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "[AsyncAuditLogger] Prepare failed: " << sqlite3_errmsg(db) << "\n";
         return false;
     }
 
-    // 使用 mysql_real_escape_string 防止 SQL 注入
-    auto esc = [conn](const std::string& s) {
-        std::vector<char> buf(s.size() * 2 + 1);
-        mysql_real_escape_string(conn, buf.data(), s.c_str(), s.size());
-        return std::string(buf.data());
-    };
+    sqlite3_bind_text(stmt, 1, entry.event_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, entry.action.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 3, static_cast<double>(entry.speed));
+    sqlite3_bind_text(stmt, 4, entry.reason.c_str(), -1, SQLITE_TRANSIENT);
 
-    std::string sql = "INSERT INTO audit_logs (event_type, action, speed, reason) VALUES ('";
-    sql += esc(entry.event_type);
-    sql += "', '";
-    sql += esc(entry.action);
-    sql += "', ";
-    sql += std::to_string(entry.speed);
-    sql += ", '";
-    sql += esc(entry.reason);
-    sql += "')";
-
-    if (mysql_real_query(conn, sql.c_str(), sql.length()) != 0) {
-        std::cerr << "[AsyncAuditLogger] INSERT failed: " << mysql_error(conn) << "\n";
-        return false;
+    bool success = sqlite3_step(stmt) == SQLITE_DONE;
+    if (!success) {
+        std::cerr << "[AsyncAuditLogger] Insert failed: " << sqlite3_errmsg(db) << "\n";
     }
-    return true;
+
+    sqlite3_finalize(stmt);
+    return success;
 }
 
 void AsyncAuditLogger::workerLoop() {
-    int current_interval = m_reconnect_base_ms;
-
     while (m_running) {
-        if (!m_connected) {
-            if (reconnect()) {
-                current_interval = m_reconnect_base_ms;
-                std::cout << "[AsyncAuditLogger] MySQL reconnected\n";
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(current_interval));
-                current_interval = std::min(current_interval * 2, m_reconnect_max_ms);
-                continue;
-            }
-        }
-
         std::unique_lock<std::mutex> lock(m_queue_mutex);
         m_cv.wait(lock, [this] { return !m_queue.empty() || !m_running; });
 
@@ -142,12 +123,8 @@ void AsyncAuditLogger::workerLoop() {
         batch.swap(m_queue);
         lock.unlock();
 
-        for (size_t i = 0; i < batch.size(); ++i) {
-            if (!insertLog(batch[i])) {
-                std::lock_guard<std::mutex> qlock(m_queue_mutex);
-                m_queue.insert(m_queue.begin(), batch.begin() + static_cast<long>(i), batch.end());
-                break;
-            }
+        for (const auto& entry : batch) {
+            insertLog(entry);
         }
     }
 }
@@ -156,7 +133,10 @@ void AsyncAuditLogger::init(const std::string& conf_path) {
     if (m_running) return;
 
     parseConfig(conf_path);
-    connectMySQL();
+    if (!initDB()) {
+        std::cerr << "[AsyncAuditLogger] DB init failed, logger will not start\n";
+        return;
+    }
 
     m_running = true;
     m_worker = std::thread(&AsyncAuditLogger::workerLoop, this);
@@ -186,9 +166,9 @@ void AsyncAuditLogger::shutdown() {
         m_worker.join();
     }
 
-    if (m_mysql) {
-        mysql_close(static_cast<MYSQL*>(m_mysql));
-        m_mysql = nullptr;
+    if (m_db) {
+        sqlite3_close(static_cast<sqlite3*>(m_db));
+        m_db = nullptr;
     }
     m_connected = false;
 }

@@ -58,12 +58,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# ========== MySQL ==========
-find_library(MYSQL_LIBRARY mysqlclient)
-if(MYSQL_LIBRARY)
-    message(STATUS "MySQL client found: ${MYSQL_LIBRARY}")
+# ========== SQLite3 ==========
+find_package(SQLite3 REQUIRED)
+if(SQLite3_FOUND)
+    message(STATUS "SQLite3 found: ${SQLite3_LIBRARIES}")
 else()
-    message(WARNING "libmysqlclient not found. Install: sudo apt install libmysqlclient-dev")
+    message(FATAL_ERROR "SQLite3 not found. Install: sudo apt install libsqlite3-dev")
 endif()
 
 # ========== hiredis ==========
@@ -100,12 +100,7 @@ add_executable(car_main
     source/RedisManager.cpp
 )
 
-target_link_libraries(car_main PRIVATE nlohmann_json::nlohmann_json)
-if(MYSQL_LIBRARY)
-    target_link_libraries(car_main PRIVATE ${MYSQL_LIBRARY})
-    target_compile_definitions(car_main PRIVATE HAS_MYSQL=1)
-endif()
-target_link_libraries(car_main PRIVATE hiredis)
+target_link_libraries(car_main PRIVATE nlohmann_json::nlohmann_json SQLite::SQLite3 hiredis)
 
 # 客户端工具
 add_executable(car_ctl
@@ -155,11 +150,7 @@ add_executable(test_async_audit_logger
     tests/test_AsyncAuditLogger.cpp
     source/AsyncAuditLogger.cpp
 )
-target_link_libraries(test_async_audit_logger PRIVATE GTest::gtest GTest::gtest_main)
-if(MYSQL_LIBRARY)
-    target_link_libraries(test_async_audit_logger PRIVATE ${MYSQL_LIBRARY})
-    target_compile_definitions(test_async_audit_logger PRIVATE HAS_MYSQL=1)
-endif()
+target_link_libraries(test_async_audit_logger PRIVATE GTest::gtest GTest::gtest_main SQLite::SQLite3)
 target_include_directories(test_async_audit_logger PRIVATE ${CMAKE_SOURCE_DIR}/include)
 gtest_discover_tests(test_async_audit_logger)
 
