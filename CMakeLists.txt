@@ -66,19 +66,7 @@ else()
     message(FATAL_ERROR "SQLite3 not found. Install: sudo apt install libsqlite3-dev")
 endif()
 
-# ========== hiredis ==========
 include(FetchContent)
-FetchContent_Declare(
-    hiredis
-    GIT_REPOSITORY https://github.com/redis/hiredis.git
-    GIT_TAG v1.2.0
-)
-FetchContent_MakeAvailable(hiredis)
-target_compile_options(hiredis PRIVATE -Wno-shadow)
-if(TARGET hiredis-test)
-    target_compile_options(hiredis-test PRIVATE -Wno-shadow -Wno-double-promotion)
-    set_target_properties(hiredis-test PROPERTIES C_CLANG_TIDY "")
-endif()
 
 # ========== libcurl ==========
 find_package(CURL QUIET)
@@ -97,10 +85,10 @@ add_executable(car_main
     source/Car_Log.cpp
     source/ConfigManager.cpp
     source/AsyncAuditLogger.cpp
-    source/RedisManager.cpp
+    source/SharedMemoryManager.cpp
 )
 
-target_link_libraries(car_main PRIVATE nlohmann_json::nlohmann_json SQLite::SQLite3 hiredis)
+target_link_libraries(car_main PRIVATE nlohmann_json::nlohmann_json SQLite::SQLite3 rt pthread)
 
 # 客户端工具
 add_executable(car_ctl
@@ -154,10 +142,10 @@ target_link_libraries(test_async_audit_logger PRIVATE GTest::gtest GTest::gtest_
 target_include_directories(test_async_audit_logger PRIVATE ${CMAKE_SOURCE_DIR}/include)
 gtest_discover_tests(test_async_audit_logger)
 
-add_executable(test_redis_manager
-    tests/test_RedisManager.cpp
-    source/RedisManager.cpp
+add_executable(test_shared_memory
+    tests/test_shared_memory.cpp
+    source/SharedMemoryManager.cpp
 )
-target_link_libraries(test_redis_manager PRIVATE GTest::gtest GTest::gtest_main nlohmann_json::nlohmann_json hiredis)
-target_include_directories(test_redis_manager PRIVATE ${CMAKE_SOURCE_DIR}/include)
-gtest_discover_tests(test_redis_manager)
+target_link_libraries(test_shared_memory PRIVATE GTest::gtest GTest::gtest_main nlohmann_json::nlohmann_json rt pthread)
+target_include_directories(test_shared_memory PRIVATE ${CMAKE_SOURCE_DIR}/include)
+gtest_discover_tests(test_shared_memory)

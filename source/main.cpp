@@ -2,7 +2,7 @@
 #include "Car_Log.hpp"
 #include "ConfigManager.hpp"
 #include "AsyncAuditLogger.hpp"
-#include "RedisManager.hpp"
+#include "SharedMemoryManager.hpp"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -262,9 +262,9 @@ int main()
     AsyncAuditLogger::getInstance().init("conf/db.conf");
     LOG_INFO("AsyncAuditLogger initialized");
 
-    // 初始化 Redis 状态管理器
-    RedisManager::getInstance().init("conf/redis.conf");
-    LOG_INFO("RedisManager initialized");
+    // 初始化状态管理器
+    SharedMemoryManager::getInstance().init();
+    LOG_INFO("SharedMemoryManager initialized");
 
     signal(SIGINT, [](int){ g_running = false; });
     signal(SIGTERM, [](int){ g_running = false; });
@@ -303,7 +303,7 @@ int main()
 
     // 优雅关闭审计日志（等待队列消费完毕）
     AsyncAuditLogger::getInstance().shutdown();
-    RedisManager::getInstance().shutdown();
+    SharedMemoryManager::getInstance().shutdown();
 
     // 退出前最后一次落盘。
     // 注意：此时各子模块可能已收到 SIGTERM 并关闭 socket，
