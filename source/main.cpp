@@ -88,7 +88,6 @@ static bool writeFaultCodesToModule(const uint16_t* codes) {
     return sendRequest(Car::SOCK_FAULT, req, resp) && resp.result == 0;
 }
 
-// 向指定模块发送请求并接收响应
 bool sendRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return false;
@@ -104,11 +103,8 @@ bool sendRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
 
     bool ok = false;
     if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-        Car::msgHdrToNetwork(req);  Car::msgValToNetwork(req);
         if (sendAll(fd, &req, sizeof(req)) && recvAll(fd, &resp, sizeof(resp))) {
-            Car::msgHdrFromNetwork(resp);
             if (Car::isValidMsg(resp)) {
-                Car::msgValFromNetwork(resp);
                 ok = true;
             }
         }
@@ -118,7 +114,6 @@ bool sendRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
     return ok;
 }
 
-// 模板函数：向指定的子模块发起查询并提取最新状态
 template <typename T>
 void fetchStateFromModule(const char* sock_path, Car::ModuleID mod_id, T* state_ptr) {
     Car::Msg cmd{}, resp{};
@@ -134,7 +129,6 @@ void fetchStateFromModule(const char* sock_path, Car::ModuleID mod_id, T* state_
     }
 }
 
-// 自动落锁规则：当车速达到阈值且当前未锁时，自动写入门锁状态为锁定
 void applyAutoLockRule() {
     Car::StatusState status{};
     Car::DoorState door{};
@@ -150,7 +144,7 @@ void applyAutoLockRule() {
     req.msg_type = Car::MsgType::CMD;
     req.mod_id = Car::ModuleID::DOOR;
     req.cmd_type = Car::CmdType::WRITE;
-    req.item_id = 6; // lock_status
+    req.item_id = 6;
     req.val_type = Car::ValType::U8;
     req.value.u8 = 1;
 
@@ -160,26 +154,19 @@ void applyAutoLockRule() {
     }
 }
 
-// 聚合最新的设备状态并落盘保存
 void syncAndSaveConfig() {
     auto& config = ConfigManager::getInstance();
-    auto data = config.getData(); // 获取当前主程序数据副本
+    auto data = config.getData();
 
-    // 发送 Epoll 查询，把分布在6个独立进程中的数据汇聚起来
     fetchStateFromModule(Car::SOCK_DOOR,   Car::ModuleID::DOOR,   &data.door);
     fetchStateFromModule(Car::SOCK_STATUS, Car::ModuleID::STATUS, &data.status);
     fetchStateFromModule(Car::SOCK_AIR,    Car::ModuleID::AIR,    &data.air);
     fetchStateFromModule(Car::SOCK_FAULT,  Car::ModuleID::FAULT,  &data.fault);
 
-    // 把拉取到的最新数据写回单例，并触发完整的写文件操作
     config.setData(data);
     config.save();
 }
 
-// 带重试的单次写入封装
-// 子模块启动需要时间完成 bind/listen，这里最多重试 max_retries 次，每次间隔 retry_ms 毫秒
-// 保证 main 进程不会因为子模块尚未就绪就静默丢失状态
-// 每次 sleep 前检查 g_running，收到 SIGINT/SIGTERM 后立刻中断，不再等剩余重试
 static bool writeU8WithRetry(const char* sock_path, Car::ModuleID mod_id,
                               uint8_t item_id, uint8_t value,
                               int max_retries = 10, int retry_ms = 200) {
@@ -262,7 +249,6 @@ int main()
     AsyncAuditLogger::getInstance().init("conf/db.conf");
     LOG_INFO("AsyncAuditLogger initialized");
 
-    // 初始化状态管理器
     SharedMemoryManager::getInstance().init();
     LOG_INFO("SharedMemoryManager initialized");
 
@@ -291,25 +277,19 @@ int main()
             last_auto_lock_check = now;
         }
 
-        // 测试时改为10秒，正式环境可以改回1分钟
         if (now - last_save >= std::chrono::seconds(10)) {
             LOG_INFO("Saving current state...");
             syncAndSaveConfig();
             last_save = now;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // 休息 100 毫秒，避免占用过多 CPU
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    // 优雅关闭审计日志（等待队列消费完毕）
-    AsyncAuditLogger::getInstance().shutdown();
-    SharedMemoryManager::getInstance().shutdown();
-
-    // 退出前最后一次落盘。
-    // 注意：此时各子模块可能已收到 SIGTERM 并关闭 socket，
-    // fetchStateFromModule 会静默失败，落盘数据为上轮保存的旧值（最多 10 秒延迟）。
-    // 车载场景下这是可接受的——下次启动时 restoreStateToModules 会恢复最近一次成功写入的状态。
     syncAndSaveConfig();
     LOG_INFO("Central controller shut down safely.");
+
+    SharedMemoryManager::getInstance().shutdown();
+    AsyncAuditLogger::getInstance().shutdown();
     return 0;
 }

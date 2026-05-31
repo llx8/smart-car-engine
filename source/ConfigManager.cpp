@@ -70,7 +70,6 @@ void ConfigManager::setData(const FullCarData& data) {
     m_data = data;
 }
 
-// 完整无删减的序列化落盘功能
 bool ConfigManager::save() {
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::string temp_path = std::string(Car::INI_FILE_PATH) + ".tmp";

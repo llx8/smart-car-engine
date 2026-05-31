@@ -1,4 +1,3 @@
-// Status Module —— 车辆状态监控子进程
 #include "ModuleServer.hpp"
 
 class StatusModule : public ModuleServer {

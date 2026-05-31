@@ -1,4 +1,3 @@
-// Door Module —— 车门控制子进程
 #include "ModuleServer.hpp"
 
 class DoorModule : public ModuleServer {

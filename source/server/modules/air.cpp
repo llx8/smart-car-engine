@@ -1,4 +1,3 @@
-// Air Module —— 空调控制子进程
 #include "ModuleServer.hpp"
 
 class AirModule : public ModuleServer {

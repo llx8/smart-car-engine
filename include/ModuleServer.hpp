@@ -11,13 +11,8 @@
 #include <iostream>
 #include <cerrno>
 
-// 每个子进程独立持有自己的退出标志
-// std::atomic<bool> 保证信号处理函数和多线程下的可见性
-// 不用 inline 是因为每个子模块各自编译成独立进程，不存在多定义问题
 static std::atomic<bool> g_keep_running{true};
 
-// 统一的信号处理注册函数，每个子进程的 main() 调用一次即可
-// ModuleServer::runLoop() 检查 g_keep_running 来决定是否退出事件循环
 inline void setupModuleSignalHandlers() {
     struct sigaction sa{};
     sa.sa_handler = [](int) { g_keep_running = false; };
@@ -29,10 +24,8 @@ inline void setupModuleSignalHandlers() {
 
 class ModuleServer {
 public:
-    // 构造函数，初始化时传入路径和名字
     ModuleServer(std::string path, std::string name) : m_path(std::move(path)), m_name(std::move(name)) {}
 
-    // 析构函数； RAII 机制， 对象销毁时自动关闭fd, 绝不泄露
     virtual ~ModuleServer() {
         if (m_server_fd != -1) close(m_server_fd);
         if (m_epoll_fd != -1) close(m_epoll_fd);
@@ -40,21 +33,18 @@ public:
         std::cout << m_name << " 资源已安全释放。" << std::endl;
     }
 
-    // 启动服务器
     void start() {
-        // 创建socket
         m_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (m_server_fd < 0) {
             perror("socket");
             return;
         }
 
-        // 绑定路径
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         strncpy(addr.sun_path, m_path.c_str(), sizeof(addr.sun_path) - 1);
         addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
-        unlink(m_path.c_str()); // 确保路径不存在
+        unlink(m_path.c_str());
         if (bind(m_server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
             perror("bind");
             close(m_server_fd);
@@ -62,7 +52,6 @@ public:
             return;
         }
 
-        // 监听
         if (listen(m_server_fd, 5) < 0) {
             perror("listen");
             close(m_server_fd);
@@ -71,7 +60,6 @@ public:
             return;
         }
         
-        // 配置Epoll
         m_epoll_fd = epoll_create1(0);
         if (m_epoll_fd < 0) {
             perror("epoll_create1");
@@ -96,13 +84,10 @@ public:
 
         std::cout << m_name << " 服务已启动，监听路径: " << m_path << "\n";
 
-        // 事件循环
         runLoop();
     }
 
 protected:
-    // 纯虚函数，老父亲不实现， 逼着子类必须实现具体业务逻辑
-    // 当收到消息时， 老父亲会把收到的req传给函数，要求子类填好resp
     virtual void processCommand(const Car::Msg&req, Car::Msg& resp) = 0;
 
 private:
@@ -155,7 +140,6 @@ private:
             for (int i = 0; i < nfds; ++i) {
                 int fd = events[i].data.fd;
                 if (fd == m_server_fd) {
-                    // 处理新连接
                     int client_fd = accept(m_server_fd, nullptr, nullptr);
                     if (client_fd < 0) {
                         continue;
@@ -166,31 +150,24 @@ private:
                     }
                 }
                 else {
-                    // 处理客户端发来的消息
                     Car::Msg req{}, resp{};
                     if (!readFull(fd, &req, sizeof(req))) {
                         close(fd);
                         epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                         continue;
                     }
-                    Car::msgHdrFromNetwork(req);
                     if (!Car::isValidMsg(req)) {
                         close(fd);
                         epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
                         continue;
                     }
-                    Car::msgValFromNetwork(req);
 
-                    // 准备相应头的基本信息
                     resp.msg_type = Car::MsgType::RESPONSE;
                     resp.mod_id = req.mod_id;
-                    resp.result = 0; // 默认成功，子类可以修改这个值表示不同的结果
+                    resp.result = 0;
 
-                    // [核心] 调用子类实现的业务逻辑
                     processCommand(req, resp);
 
-                    // 发送响应
-                    Car::msgHdrToNetwork(resp);  Car::msgValToNetwork(resp);
                     if (!writeFull(fd, &resp, sizeof(resp))) {
                         close(fd);
                         epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, fd, nullptr);

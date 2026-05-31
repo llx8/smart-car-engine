@@ -1,12 +1,3 @@
-// car_ai.cpp — 智能车载 AI 大脑进程
-//
-// 职责：
-//   1. 从 car_ai.conf(需指定路径) 读取 API Key / 模型 / 接口地址
-//   2. 维护多轮对话历史（最近 MAX_HISTORY 条）
-//   3. 用户输入自然语言 → POST 到 DeepSeek API → 解析 JSON 指令
-//   4. 安全状态机：高速行驶时拦截危险指令
-//   5. 通过现有 Unix Domain Socket IPC 把指令下发给各子模块进程
-
 #include "CarData.hpp"
 #include <nlohmann/json.hpp>
 #include <sys/socket.h>
@@ -26,14 +17,8 @@
 
 using json = nlohmann::json;
 
-// ─────────────────────────────────────────────
-//  全局退出标志
-// ─────────────────────────────────────────────
 static std::atomic<bool> g_running{true};
 
-// ─────────────────────────────────────────────
-//  配置
-// ─────────────────────────────────────────────
 struct AiConfig {
     std::string api_key;
     std::string model    = "deepseek-v4-flash";
@@ -42,7 +27,6 @@ struct AiConfig {
     int         api_port = 443;
 };
 
-// 解析 car_ai.conf，格式：key = value，# 开头为注释
 static std::string trim(const std::string& s) {
     const auto b = s.find_first_not_of(" \t\r\n");
     if (b == std::string::npos) return "";
@@ -66,8 +50,6 @@ static bool loadConfig(const std::string& path, AiConfig& cfg) {
         if      (key == "api_key") cfg.api_key  = val;
         else if (key == "model")   cfg.model    = val;
         else if (key == "api_url") {
-            // 从完整 URL 里拆出 host / path / port
-            // 支持格式：https://api.deepseek.com/chat/completions
             std::string url = val;
             if (url.substr(0, 8) == "https://") url = url.substr(8);
             else if (url.substr(0, 7) == "http://")  { url = url.substr(7); cfg.api_port = 80; }
@@ -88,9 +70,6 @@ static bool loadConfig(const std::string& path, AiConfig& cfg) {
     return true;
 }
 
-// ─────────────────────────────────────────────
-//  IPC 工具（复用 main.cpp 里相同的逻辑）
-// ─────────────────────────────────────────────
 static bool ipc_sendAll(int fd, const void* buf, size_t size) {
     const char* p = static_cast<const char*>(buf);
     size_t done = 0;
@@ -124,12 +103,9 @@ static bool ipcRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
     strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
     addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
     bool ok = false;
-    Car::msgHdrToNetwork(req);  Car::msgValToNetwork(req);
     if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
         if (ipc_sendAll(fd, &req, sizeof(req)) && ipc_recvAll(fd, &resp, sizeof(resp))) {
-            Car::msgHdrFromNetwork(resp);
             if (Car::isValidMsg(resp)) {
-                Car::msgValFromNetwork(resp);
                 ok = true;
             }
         }
@@ -138,7 +114,6 @@ static bool ipcRequest(const char* sock_path, Car::Msg& req, Car::Msg& resp) {
     return ok;
 }
 
-// 读取 status 模块的当前车速，供安全状态机使用
 static float getCurrentSpeed() {
     Car::Msg req{}, resp{};
     req.msg_type = Car::MsgType::CMD;
@@ -151,13 +126,7 @@ static float getCurrentSpeed() {
     return 0.0f; // 读取失败时保守返回 0，不拦截
 }
 
-// ─────────────────────────────────────────────
-//  JSON 工具（基于 nlohmann/json）
-// ─────────────────────────────────────────────
-
-// 从原始响应里剥掉 ```json ... ``` 的 markdown 壳
 static std::string stripMarkdownFence(const std::string& s) {
-    // 找第一个 { 和最后一个 }，直接截取中间部分
     const auto first = s.find('{');
     const auto last  = s.rfind('}');
     if (first == std::string::npos || last == std::string::npos || last < first)
@@ -165,7 +134,6 @@ static std::string stripMarkdownFence(const std::string& s) {
     return s.substr(first, last - first + 1);
 }
 
-// 解析 actions 数组，每条 action 包含 module / field / value
 struct Action {
     std::string module; // "air" / "door" / "status"
     std::string field;  // 字段名，对应 item_id 表
@@ -189,13 +157,8 @@ static std::vector<Action> parseActions(const json& j) {
     return result;
 }
 
-// ─────────────────────────────────────────────
-//  安全状态机
-// ─────────────────────────────────────────────
-constexpr float SAFE_SPEED_THRESHOLD = 5.0f; // km/h，低于此速度才允许操作车门
+constexpr float SAFE_SPEED_THRESHOLD = 5.0f;
 
-// 判断某条 action 在当前车速下是否安全
-// 返回 false 表示拦截，同时填写拦截原因
 static bool isSafeAction(const Action& act, float speed, std::string& reason) {
     // 禁止 AI 控制档位（由用户手动操作）
     if (act.module == "status" && act.field == "gear") {
@@ -203,9 +166,8 @@ static bool isSafeAction(const Action& act, float speed, std::string& reason) {
         return false;
     }
 
-    // 高速行驶时禁止开车门 / 开后备箱
     if (act.module == "door" && speed > SAFE_SPEED_THRESHOLD) {
-        if (act.field != "lock_status") { // 锁门在任何速度下都允许
+        if (act.field != "lock_status") {
             reason = "车速 " + std::to_string(static_cast<int>(speed)) +
                      " km/h，禁止开门操作";
             return false;
@@ -215,7 +177,6 @@ static bool isSafeAction(const Action& act, float speed, std::string& reason) {
     return true;
 }
 
-// 执行一条 action，向对应子模块发送 IPC 写入指令
 static bool executeAction(const Action& act) {
     const Car::FieldMeta* meta = Car::findField(act.module, act.field);
     if (!meta) {
@@ -244,20 +205,13 @@ static bool executeAction(const Action& act) {
     return ipcRequest(meta->sock_path, req, resp) && resp.result == 0;
 }
 
-// ─────────────────────────────────────────────
-//  DeepSeek HTTP 客户端（libcurl）
-// ─────────────────────────────────────────────
-
 #include <curl/curl.h>
 
-// 多轮对话历史条目
 struct ChatMsg { std::string role; std::string content; };
 
-// 构建发给 DeepSeek 的完整请求 JSON
 static std::string buildRequestJson(const AiConfig& cfg,
                                     const std::vector<ChatMsg>& history,
                                     const std::string& user_input) {
-    // System prompt：约束模型只返回结构化 JSON，并告知安全规则
     static const std::string SYSTEM_PROMPT =
         "你是一个车载智能控制助手。用户用自然语言描述需求，你分析意图后，"
         "严格按以下 JSON 格式返回，不要输出任何其他内容，不要加 markdown 代码块：\n"
@@ -277,7 +231,7 @@ static std::string buildRequestJson(const AiConfig& cfg,
     j["model"]  = cfg.model;
     j["stream"] = false;
 
-    j["messages"].push_back({{"role", "system"}, {"content": SYSTEM_PROMPT}});
+    j["messages"].push_back({{"role", "system"}, {"content", SYSTEM_PROMPT}});
     for (const auto& m : history)
         j["messages"].push_back({{"role", m.role}, {"content", m.content}});
     j["messages"].push_back({{"role", "user"}, {"content", user_input}});
@@ -285,7 +239,6 @@ static std::string buildRequestJson(const AiConfig& cfg,
     return j.dump();
 }
 
-// libcurl 写回调：将响应数据追加到 string
 static size_t curlWriteCb(void* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* buf = static_cast<std::string*>(userdata);
     const size_t total = size * nmemb;
@@ -293,7 +246,6 @@ static size_t curlWriteCb(void* ptr, size_t size, size_t nmemb, void* userdata) 
     return total;
 }
 
-// 通过 libcurl 发送 HTTPS 请求，返回响应 body
 static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
     const std::string url = "https://" + cfg.api_host +
                             (cfg.api_port != 443 ? ":" + std::to_string(cfg.api_port) : "") +
@@ -332,8 +284,6 @@ static std::string httpsPost(const AiConfig& cfg, const std::string& body) {
     return (res == CURLE_OK) ? response : "";
 }
 
-// 从 API 返回的响应 JSON 里提取 message.content 字段
-// DeepSeek/OpenAI 格式：{"choices":[{"message":{"content":"..."}}]}
 static std::string extractContent(const std::string& resp_json) {
     try {
         return json::parse(resp_json).at("choices").at(0).at("message").at("content").get<std::string>();
@@ -342,11 +292,8 @@ static std::string extractContent(const std::string& resp_json) {
     }
 }
 
-// ─────────────────────────────────────────────
-//  主对话循环
-// ─────────────────────────────────────────────
 static void runChatLoop(const AiConfig& cfg) {
-    constexpr int MAX_HISTORY = 20; // 最多保留 10 轮（每轮 user + assistant 各一条）
+    constexpr int MAX_HISTORY = 20;
     std::vector<ChatMsg> history;
 
     std::cout << "\n╔════════════════════════════════════════╗\n"
@@ -357,34 +304,29 @@ static void runChatLoop(const AiConfig& cfg) {
     while (g_running) {
         std::cout << "你: ";
         std::string input;
-        if (!std::getline(std::cin, input)) break; // EOF（Ctrl+D）
+        if (!std::getline(std::cin, input)) break;
         input = trim(input);
         if (input.empty()) continue;
         if (input == "exit" || input == "quit" || input == "退出") break;
 
         std::cout << "[AI] 思考中...\n";
 
-        // 1. 构建请求 JSON
         const std::string req_body = buildRequestJson(cfg, history, input);
 
-        // 2. 发送 HTTPS 请求
         const std::string raw_resp = httpsPost(cfg, req_body);
         if (raw_resp.empty()) {
             std::cout << "[AI] 请求失败，请检查网络或 API Key\n\n";
             continue;
         }
 
-        // 3. 提取 message.content（模型输出的 JSON 字符串）
         const std::string content = extractContent(raw_resp);
         if (content.empty()) {
             std::cout << "[AI] 响应解析失败，原始响应:\n" << raw_resp.substr(0, 300) << "\n\n";
             continue;
         }
 
-        // 4. 剥掉可能存在的 markdown 代码块壳
         const std::string clean = stripMarkdownFence(content);
 
-        // 5. 解析 AI 返回的结构化 JSON（只 parse 一次，reply + actions 共享）
         json ai_json;
         try {
             ai_json = json::parse(clean);
@@ -396,26 +338,22 @@ static void runChatLoop(const AiConfig& cfg) {
         const std::string reply = ai_json.value("reply", "");
         std::cout << "\nAI: " << (reply.empty() ? content : reply) << "\n";
 
-        // 6. 解析 actions 数组
         const std::vector<Action> actions = parseActions(ai_json);
 
         if (actions.empty()) {
             std::cout << "(本次无车控指令)\n\n";
         } else {
-            // 7. 安全状态机：查询当前车速
             const float speed = getCurrentSpeed();
             std::cout << "\n[执行指令] 当前车速: " << speed << " km/h\n";
 
             for (const auto& act : actions) {
                 std::string reason;
                 if (!isSafeAction(act, speed, reason)) {
-                    // 安全检查不通过，拦截
                     std::cout << "  [拦截] " << act.module << "." << act.field
                               << " = " << act.value << "  原因: " << reason << "\n";
                     continue;
                 }
 
-                // 8. 通过 IPC 下发指令
                 const bool ok = executeAction(act);
                 std::cout << "  [" << (ok ? "成功" : "失败") << "] "
                           << act.module << "." << act.field
@@ -424,11 +362,9 @@ static void runChatLoop(const AiConfig& cfg) {
             std::cout << "\n";
         }
 
-        // 9. 把本轮对话追加进历史（assistant 存 reply 文本，不存原始 JSON）
         history.push_back({"user",      input});
         history.push_back({"assistant", reply.empty() ? content : reply});
 
-        // 10. 超出上限时，丢掉最早的两条（一问一答）
         while (static_cast<int>(history.size()) > MAX_HISTORY)
             history.erase(history.begin(), history.begin() + 2);
     }
@@ -436,18 +372,13 @@ static void runChatLoop(const AiConfig& cfg) {
     std::cout << "\n[AI] 再见！\n";
 }
 
-// ─────────────────────────────────────────────
-//  入口
-// ─────────────────────────────────────────────
 int main(int argc, char* argv[]) {
-    // 信号处理
     struct sigaction sa{};
     sa.sa_handler = [](int) { g_running = false; };
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT,  &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
-    // 配置文件路径（默认同目录，也可以命令行指定）
     std::string conf_path = "./car_ai.conf";
     if (argc >= 2) conf_path = argv[1];
 

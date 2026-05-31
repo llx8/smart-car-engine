@@ -57,14 +57,11 @@ static bool parseGearInput(const std::string& s, uint8_t& out) {
     }
 }
 
-// 发送指令的通用封装
 int sendCmd(const std::string& path, Car::Msg& cmd, Car::Msg& resp) {
-    // 实现发送指令的逻辑
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
-    // 设置超时，防止服务端挂掉导致客户端卡死
-    timeval tv{3, 0}; // 3秒超时
+    timeval tv{3, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
@@ -79,22 +76,18 @@ int sendCmd(const std::string& path, Car::Msg& cmd, Car::Msg& resp) {
         return -1;
     }
 
-    Car::msgHdrToNetwork(cmd);  Car::msgValToNetwork(cmd);
     if (!sendAll(fd, &cmd, sizeof(cmd)) || !recvAll(fd, &resp, sizeof(resp))) {
         close(fd);
         return -1;
     }
-    Car::msgHdrFromNetwork(resp);
     if (!Car::isValidMsg(resp)) {
         close(fd);
         return -1;
     }
-    Car::msgValFromNetwork(resp);
     close(fd);
     return 0;
 }
 
-// 格式化打印 get_all 命令的响应结果
 void printGetAll(Car::ModuleID mod_ID, const Car::Msg& resp) {
     if (resp.result != 0) {
         std::cerr << "操作失败，错误码: " << resp.result << "\n";
@@ -171,7 +164,6 @@ int main(int argc, char const *argv[])
     std::string modStr = argv[1];
     std::string action = argv[2];
 
-    // 模块路由：从共享字段表中提取模块级别的路由信息
     std::unordered_map<std::string, std::pair<Car::ModuleID, std::string>> routes;
     for (const auto& m : Car::FIELD_TABLE) {
         if (routes.find(m.module) == routes.end()) {
@@ -189,7 +181,6 @@ int main(int argc, char const *argv[])
     req.msg_type = Car::MsgType::CMD;
     req.mod_id = modID;
 
-    // 处理get_all命令
     if (action == "get_all") {
         req.cmd_type = Car::CmdType::GET_ALL;
         if (sendCmd(sockPath, req, resp) == 0) {
@@ -197,7 +188,6 @@ int main(int argc, char const *argv[])
         }
     }
 
-    // 处理read命令
     else if (action == "read") {
         if (argc < 4) {
             std::cerr << " 错误：缺少item_id参数！\n";
@@ -219,7 +209,6 @@ int main(int argc, char const *argv[])
                 return 1;
             }
 
-            // 终极化简：管它是什么字段，直接根据返回的数据类型拆盲盒！
             std::cout << "当前值为： ";
             switch (resp.val_type) {
                 case Car::ValType::U8:
@@ -227,7 +216,6 @@ int main(int argc, char const *argv[])
                         std::cout << Car::gearToText(resp.value.u8) << " (" << static_cast<int>(resp.value.u8) << ")\n";
                     }
                     else {
-                        // uint8_t 默认会被当成字符打印，所以要转成 int
                         std::cout << static_cast<int>(resp.value.u8) << "\n";
                     }
                     break;
@@ -241,7 +229,6 @@ int main(int argc, char const *argv[])
                     break;
 
                 case Car::ValType::STR_U16:
-                    // 数组类型特殊处理
                     for (int i = 0; i < Car::MAX_FAULT_CODE; ++i) {
                         std::cout << resp.value.arr_u16[i] << " ";
                     }
@@ -259,7 +246,6 @@ int main(int argc, char const *argv[])
         }
     }
 
-    // 处理write命令
     else if (action == "write") {
         if (argc != 5) {
             std::cerr << " 错误：write 命令参数数量不正确，应为 <item_id> <value>！\n";
@@ -279,7 +265,6 @@ int main(int argc, char const *argv[])
         req.item_id = meta->item_id;
         req.val_type = meta->val_type;
 
-        // 根据类型转换字符串
         try {
             if (modStr == "status" && item == "gear") {
                 if (!parseGearInput(valStr, req.value.u8)) {

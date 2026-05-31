@@ -1,4 +1,3 @@
-// Fault Module —— 故障诊断子进程
 #include "ModuleServer.hpp"
 
 class FaultModule : public ModuleServer {
