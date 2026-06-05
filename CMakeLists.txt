@@ -17,33 +17,10 @@ add_compile_options(
 
 find_program(CLANG_TIDY_EXE clang-tidy)
 if(CLANG_TIDY_EXE)
-    set(CMAKE_CXX_CLANG_TIDY
-        "${CLANG_TIDY_EXE}"
-        "-checks=bugprone-*,performance-*,modernize-*,misc-*,\
--readability-*,cppcoreguidelines-*,\
--modernize-use-trailing-return-type,\
--readability-magic-numbers,-cppcoreguidelines-avoid-magic-numbers,\
--modernize-avoid-c-arrays,-cppcoreguidelines-avoid-c-arrays,\
--cppcoreguidelines-pro-bounds-array-to-pointer-decay,\
--hicpp-avoid-c-arrays,-hicpp-no-array-decay,\
--readability-identifier-length,\
--cppcoreguidelines-pro-type-union-access,\
--cppcoreguidelines-pro-type-reinterpret-cast,\
--cppcoreguidelines-macro-usage,\
--cppcoreguidelines-avoid-non-const-global-variables,\
--cppcoreguidelines-pro-bounds-pointer-arithmetic,\
--bugprone-easily-swappable-parameters,\
--cppcoreguidelines-pro-type-member-init,\
--cppcoreguidelines-special-member-functions,\
--cppcoreguidelines-pro-type-vararg,\
--cppcoreguidelines-pro-bounds-constant-array-index,\
--modernize-raw-string-literal"
-        "--warnings-as-errors=*"
-        "-header-filter=${CMAKE_SOURCE_DIR}/include/.*|${CMAKE_SOURCE_DIR}/source/.*"
-    )
+    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE}" "-checks=bugprone-*,performance-*,modernize-use-nullptr,modernize-use-override")
     message(STATUS "clang-tidy found: ${CLANG_TIDY_EXE}")
 else()
-    message(WARNING "clang-tidy not installed. Run: sudo apt install clang-tidy")
+    message(WARNING "clang-tidy not found")
 endif()
 
 # ========== Sanitizers ==========

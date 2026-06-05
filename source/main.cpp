@@ -144,7 +144,7 @@ void applyAutoLockRule() {
     req.msg_type = Car::MsgType::CMD;
     req.mod_id = Car::ModuleID::DOOR;
     req.cmd_type = Car::CmdType::WRITE;
-    req.item_id = 6;
+    req.item_id = 6; // lock_status
     req.val_type = Car::ValType::U8;
     req.value.u8 = 1;
 
@@ -244,7 +244,7 @@ void restoreStateToModules(const ConfigManager::FullCarData& data) {
 
 int main()
 {
-    Logger::getInstance().init("car_ctl.log", LogLevel::INFO);
+    Logger::getInstance().init("car_main.log", LogLevel::INFO);
 
     AsyncAuditLogger::getInstance().init("conf/db.conf");
     LOG_INFO("AsyncAuditLogger initialized");
